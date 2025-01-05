@@ -1,0 +1,84 @@
+on: [push, pull_request]
+name: Build and run
+jobs:
+  build-and-run:
+    name: Build and run
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        ghc: ['8.10.7', '9.0.2', '9.2.8', '9.4.8', '9.6', '9.8', '9.10', '9.12']
+        os: [ubuntu-22.04, macos-13, macos-14]
+        exclude:
+          # The configure script for GHC 9.10.1 doesn't work with macOS: https://gitlab.haskell.org/ghc/ghc/-/issues/24999
+          # These can be removed once GHC 9.10.2 is released.
+          - ghc: '9.10'
+            os: macos-13
+          - ghc: '9.10'
+            os: macos-14
+
+        include:
+          # Ubuntu 24.04 doesn't contain LLVM 12, so exclude such combinations if you are going to use ubuntu-24.04.
+
+          # LLVM on Windows requires GHC >= 9.12: https://gitlab.haskell.org/ghc/ghc/-/issues/22487
+          - ghc: '9.12'
+            os: windows-latest
+
+          # LLVM version
+          # I use LLVM 12 for GHC <= 9.8 because there is a problem with GHC <= 9.8 && LLVM >= 13:
+          #   https://gitlab.haskell.org/ghc/ghc/-/issues/23870
+          - ghc: '8.10.7'
+            llvm: '12'
+          - ghc: '9.0.2'
+            llvm: '12'
+          - ghc: '9.2.8'
+            llvm: '12'
+          - ghc: '9.4.8'
+            llvm: '12'
+          - ghc: '9.6'
+            llvm: '12'
+          - ghc: '9.8'
+            llvm: '12'
+          - ghc: '9.10'
+            llvm: '15'
+          - ghc: '9.12'
+            llvm: '15'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install LLVM with Homebrew
+        run: |
+          brew install llvm@${{ matrix.llvm }}
+          echo "OPT=$(brew --prefix llvm@${{ matrix.llvm }})/bin/opt" >> "${GITHUB_ENV}"
+          echo "LLC=$(brew --prefix llvm@${{ matrix.llvm }})/bin/llc" >> "${GITHUB_ENV}"
+          echo "LLVMAS=$(brew --prefix llvm@${{ matrix.llvm }})/bin/clang" >> "${GITHUB_ENV}"
+        if: ${{ matrix.os == 'macos-13' || matrix.os == 'macos-14' }}
+
+      - name: Install LLVM with APT
+        run: |
+          sudo apt-get install llvm-${{ matrix.llvm }} clang-${{ matrix.llvm }}
+          echo "OPT=opt-${{ matrix.llvm }}" >> "${GITHUB_ENV}"
+          echo "LLC=llc-${{ matrix.llvm }}" >> "${GITHUB_ENV}"
+          echo "LLVMAS=clang-${{ matrix.llvm }}" >> "${GITHUB_ENV}"
+        if: ${{ matrix.os == 'ubuntu-22.04' || matrix.os == 'ubuntu-24.04' }}
+
+      # Workaround https://gitlab.haskell.org/ghc/ghc/-/issues/20592
+      - name: Workaround a problem with GHC 9.0.2 on Apple Silicon Mac
+        run: echo "C_INCLUDE_PATH=`xcrun --show-sdk-path`/usr/include/ffi" >> "${GITHUB_ENV}"
+        if: ${{ matrix.os == 'macos-14' && matrix.ghc == '9.0.2' }}
+
+      # Some runner images may contain GHC without LLVM backend configuration and I want to override it with `--force`.
+      # Currently, haskell-actions/setup does not have the ability to pass `--force` (https://github.com/haskell-actions/setup/issues/103),
+      # so I use haskell/ghcup-setup.
+      - uses: haskell/ghcup-setup@v1
+      - name: Install GHC and cabal-install
+        run: |
+          ghcup install ghc ${{ matrix.ghc }} --set --force
+          ghcup install cabal latest --set
+          cabal update
+
+      - name: Build
+        run: cabal build
+
+      - name: Run
+        run: cabal run
